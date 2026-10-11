@@ -3,6 +3,32 @@ import Foundation
 #if os(macOS)
 
 extension ChromiumLocalStorageReader {
+    /// Exact raw-key read for credential discovery. Never falls back to orphan-file scanning.
+    /// Rejects incomplete/checksum-invalid reads and observable file changes; this is not a transaction.
+    /// Returns the stored bytes without decoding, or nil for an absent/deleted key or a rejected read.
+    /// Requires a physical directory path without symlink components; bypasses the shared memo.
+    public static func readCurrentValue(forRawKey key: Data, in directory: URL) -> Data? {
+        guard !key.isEmpty, let files = ChromiumAnchoredFiles(directory: directory) else { return nil }
+        let cache = LevelDBReadCache(strictReads: true, readData: { try files.read($0) })
+        var complete = true
+        let entries = self.decodeFiles(files.files, cache: cache, complete: &complete, logger: { _ in })
+        guard complete, files.unchanged(),
+              let entry = entries.first(where: { $0.key == key }), !entry.isDeletion else { return nil }
+        return entry.value
+    }
+
+    private static func maskedCRC32C(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ (crc & 1 == 1 ? 0x82F6_3B78 : 0)
+            }
+        }
+        crc = ~crc
+        return ((crc >> 15) | (crc << 17)) &+ 0xA282_EAD8
+    }
+
     // MARK: - LevelDB traversal
 
     struct LevelDBEntry: Sendable {
@@ -54,6 +80,18 @@ extension ChromiumLocalStorageReader {
                 results.append(contentsOf: tableEntries)
             }
         }
+        if cache.strictReads {
+            var versions: [Data: [UInt64: LevelDBEntry]] = [:]
+            for entry in results {
+                if let previous = versions[entry.key]?[entry.sequence],
+                   previous.isDeletion != entry.isDeletion || previous.value != entry.value
+                {
+                    complete = false
+                    return []
+                }
+                versions[entry.key, default: [:]][entry.sequence] = entry
+            }
+        }
         // Internal keys sort by descending sequence, then descending value type (value before deletion).
         results.sort {
             if $0.sequence != $1.sequence {
@@ -75,6 +113,19 @@ extension ChromiumLocalStorageReader {
         case first = 2
         case middle = 3
         case last = 4
+    }
+
+    private static func validLogChecksum(
+        _ data: Data, payloadOffset: Int, length: Int, blockEnd: Int) -> Bool
+    {
+        guard payloadOffset + length <= blockEnd else { return false }
+        let type = data[payloadOffset - 1]
+        let checksum = self.readUInt32LE(data, at: payloadOffset - 7)
+        if length == 0, type == 0, checksum == 0 {
+            return true
+        }
+        let payload = data.subdata(in: payloadOffset..<(payloadOffset + length))
+        return checksum == self.maskedCRC32C(Data([type]) + payload)
     }
 
     private static func readLogEntries(
@@ -105,6 +156,15 @@ extension ChromiumLocalStorageReader {
                 let length = Int(self.readUInt16LE(data, at: blockOffset + 4))
                 let type = data[blockOffset + 6]
                 blockOffset += 7
+                if cache.strictReads, !self.validLogChecksum(
+                    data,
+                    payloadOffset: blockOffset,
+                    length: length,
+                    blockEnd: blockEnd)
+                {
+                    complete = false
+                    return []
+                }
                 if length == 0 {
                     // LevelDB emits an empty FIRST when only a record header fits in this block.
                     if type == LogRecordType.first.rawValue {
@@ -156,10 +216,7 @@ extension ChromiumLocalStorageReader {
         if fragmented {
             complete = false
         }
-        if !recordBuffer.isEmpty {
-            records.append(recordBuffer)
-        }
-        return records
+        return records + (recordBuffer.isEmpty ? [] : [recordBuffer])
     }
 
     private static func decodeWriteBatch(_ data: Data, complete: inout Bool) -> [LevelDBEntry] {
@@ -214,20 +271,28 @@ extension ChromiumLocalStorageReader {
         let footerStart = data.count - self.footerSize
         let footerData = data.subdata(in: footerStart..<(data.count - 8))
         var reader = ByteReader(footerData)
-        guard self.readBlockHandle(&reader) != nil,
+        guard let metaHandle = self.readBlockHandle(&reader),
               let indexHandle = self.readBlockHandle(&reader)
         else { complete = false; return [] }
 
-        guard let indexBlock = self.readBlock(data: data, handle: indexHandle, logger: logger)
+        if cache.strictReads {
+            guard self.readUInt64LE(data, at: data.count - 8) == 0xDB47_7524_8B80_FB57,
+                  self.readBlock(data: data, handle: metaHandle, strict: true, logger: logger) != nil
+            else { complete = false; return [] }
+        }
+        guard let indexBlock = self.readBlock(
+            data: data, handle: indexHandle, strict: cache.strictReads, logger: logger)
         else { complete = false; return [] }
-        let indexEntries = self.parseDataBlock(indexBlock, treatKeysAsInternal: false, complete: &complete)
+        let indexEntries = self.parseDataBlock(
+            indexBlock, treatKeysAsInternal: false, strict: cache.strictReads, complete: &complete)
         var results: [LevelDBEntry] = []
 
         for entry in indexEntries {
             guard let handle = self.decodeBlockHandle(from: entry.value) else { complete = false; continue }
-            guard let blockData = self.readBlock(data: data, handle: handle, logger: logger)
+            guard let blockData = self.readBlock(data: data, handle: handle, strict: cache.strictReads, logger: logger)
             else { complete = false; continue }
-            let dataEntries = self.parseDataBlock(blockData, treatKeysAsInternal: true, complete: &complete)
+            let dataEntries = self.parseDataBlock(
+                blockData, treatKeysAsInternal: true, strict: cache.strictReads, complete: &complete)
             results.append(contentsOf: dataEntries)
         }
         return results
@@ -236,6 +301,7 @@ extension ChromiumLocalStorageReader {
     private static func readBlock(
         data: Data,
         handle: BlockHandle,
+        strict: Bool,
         logger: (String) -> Void) -> Data?
     {
         let start = handle.offset
@@ -246,6 +312,9 @@ extension ChromiumLocalStorageReader {
         guard data.count - end >= 5 else { return nil }
         let rawBlock = data.subdata(in: start..<end)
         let compressionType = data[end]
+        if strict, self.readUInt32LE(data, at: end + 1) != self.maskedCRC32C(rawBlock + Data([compressionType])) {
+            return nil
+        }
         switch compressionType {
         case 0:
             return rawBlock
@@ -260,6 +329,7 @@ extension ChromiumLocalStorageReader {
     private static func parseDataBlock(
         _ data: Data,
         treatKeysAsInternal: Bool,
+        strict: Bool,
         complete: inout Bool) -> [LevelDBEntry]
     {
         guard data.count >= 4 else { complete = false; return [] }
@@ -267,15 +337,31 @@ extension ChromiumLocalStorageReader {
         let restartArraySize = (restartCount + 1) * 4
         guard data.count >= restartArraySize else { complete = false; return [] }
         let limit = data.count - restartArraySize
+        if strict {
+            guard restartCount > 0, self.readUInt32LE(data, at: limit) == 0,
+                  limit > 0 || restartCount == 1 else { complete = false; return [] }
+        }
 
         var entries: [LevelDBEntry] = []
         var offset = 0
+        var restartIndex = 0
         var lastKey = Data()
         while offset < limit {
+            let entryOffset = offset
             guard let shared = self.readVarint32(data, at: &offset),
                   let nonShared = self.readVarint32(data, at: &offset),
                   let valueLength = self.readVarint32(data, at: &offset)
             else { complete = false; break }
+
+            // Restart offsets must name unshared entry boundaries, never bytes hiding newer records.
+            if strict, restartIndex < restartCount {
+                let restart = Int(self.readUInt32LE(data, at: limit + restartIndex * 4))
+                guard restart >= entryOffset else { complete = false; break }
+                if restart == entryOffset {
+                    guard shared == 0 else { complete = false; break }
+                    restartIndex += 1
+                }
+            }
 
             let keyEnd = offset + Int(nonShared)
             guard keyEnd <= limit else { complete = false; break }
@@ -304,6 +390,9 @@ extension ChromiumLocalStorageReader {
             } else {
                 entries.append(LevelDBEntry(key: fullKey, value: value, isDeletion: false, sequence: 0))
             }
+        }
+        if strict, limit > 0, restartIndex != restartCount {
+            complete = false
         }
         return entries
     }
