@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.6 — 2026-10-11
 
 **Highlights:** Chromium local-storage reads return the current record by LevelDB sequence and live manifest, and a new strict exact-key API with descriptor-anchored reads serves credential discovery.
