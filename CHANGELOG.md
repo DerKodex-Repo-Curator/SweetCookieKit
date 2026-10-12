@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.6 — 2026-10-11
+
+**Highlights:** Chromium local-storage reads return the current record by LevelDB sequence and live manifest, and a new strict exact-key API with descriptor-anchored reads serves credential discovery.
 
 - Add strict exact-key Chromium local-storage reads with manifest, checksum, and file-change validation and descriptor-anchored symlink protection for credential discovery. (#25, thanks @OttoPrua)
 - Fix Chromium local-storage current-record selection using LevelDB sequences and live manifest files, preserving sign-in values after older deletions and excluding stale tokens from text and token scans. (steipete/CodexBar#3536)
