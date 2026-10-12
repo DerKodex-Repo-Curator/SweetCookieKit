@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.7 — 2026-10-12
 
-- Chromium cookie imports no longer request a browser's Safe Storage key when its cookie store has no cookies for the requested domains, avoiding unnecessary Keychain prompts.
+**Highlights:** Chromium cookie imports check a cookie store for the requested hosts before asking for the browser's Safe Storage key, so browsers without matching cookies never trigger a Keychain prompt.
+
+- Skip the Chromium Safe Storage key request when a browser's cookie store has no cookies for the requested domains, avoiding unnecessary Keychain prompts. (#27, steipete/CodexBar#4443)
 
 ## 0.5.6 — 2026-10-11
 
