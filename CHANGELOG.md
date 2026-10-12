@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.7 — 2026-10-12
 
 **Highlights:** Chromium cookie imports check a cookie store for the requested hosts before asking for the browser's Safe Storage key, so browsers without matching cookies never trigger a Keychain prompt.
