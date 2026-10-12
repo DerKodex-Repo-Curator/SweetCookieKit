@@ -58,7 +58,7 @@ Stores identify both the browser profile and the underlying cookie store. This l
 
 ## Permissions and Keychain access
 
-Safari cookie access may require Full Disk Access. Chromium imports may ask macOS Keychain for that browser's Safe Storage credential so encrypted cookie values can be read.
+Safari cookie access may require Full Disk Access. Chromium imports filter cookie hosts before requesting that browser's Safe Storage credential from macOS Keychain. Stores with no matching cookies and cookies with plaintext values need no Keychain access; matching encrypted values may require a prompt.
 
 Background work can prohibit Keychain UI for one import:
 

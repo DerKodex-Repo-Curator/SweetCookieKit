@@ -11,6 +11,84 @@ import Testing
 
 @Suite(.serialized)
 struct ChromeCookieImporterTests {
+    @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
+    func unrelatedHostsDoNotRequestSafeStorageKey(domainMatch: BrowserCookieDomainMatch) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("Cookies")
+        try Self.writeChromiumCookieDatabase(
+            at: databaseURL,
+            hostKey: ".unrelated.test",
+            encryptedValue: Data("v10-encrypted-unrelated-cookie".utf8))
+
+        var keyRequests = 0
+        let records = try ChromeCookieImporter.loadCookies(
+            from: Self.cookieStore(at: databaseURL),
+            matchingDomains: ["example.com"],
+            domainMatch: domainMatch,
+            safeStorageKey: { _ in
+                keyRequests += 1
+                return Data(repeating: 0x11, count: kCCKeySizeAES128)
+            })
+
+        #expect(records.isEmpty)
+        #expect(keyRequests == 0)
+    }
+
+    @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
+    func matchingEncryptedCookiesRequestSafeStorageKeyOnce(domainMatch: BrowserCookieDomainMatch) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("Network/Cookies")
+        let key = Data(repeating: 0x11, count: kCCKeySizeAES128)
+        let plaintext = Data(SHA256.hash(data: Data(".example.com".utf8))) + Data("synthetic-session".utf8)
+        let encrypted = Data("v10".utf8) + Self.encryptAES128CBCPKCS7(plaintext: plaintext, key: key)
+        try Self.writeChromiumCookieDatabase(at: databaseURL, encryptedValue: encrypted)
+        var database: OpaquePointer?
+        try #require(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+        defer { sqlite3_close(database) }
+        try #require(sqlite3_exec(database, "INSERT INTO cookies SELECT * FROM cookies", nil, nil, nil) == SQLITE_OK)
+
+        var keyRequests = 0
+        let records = try ChromeCookieImporter.loadCookies(
+            from: Self.cookieStore(at: databaseURL, browser: .chromeBeta, kind: .network),
+            matchingDomains: ["example.com"],
+            domainMatch: domainMatch,
+            safeStorageKey: { browser in
+                #expect(browser == .chromeBeta)
+                keyRequests += 1
+                return key
+            })
+
+        #expect(records.count == 2)
+        #expect(records.allSatisfy { $0.value == "synthetic-session" && $0.hostKey == ".example.com" })
+        #expect(keyRequests == 1)
+    }
+
+    @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
+    func matchingPlaintextCookiesDoNotRequestSafeStorageKey(domainMatch: BrowserCookieDomainMatch) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("Cookies")
+        try Self.writeChromiumCookieDatabase(
+            at: databaseURL,
+            value: "synthetic-plaintext-session",
+            encryptedValue: Data())
+
+        var keyRequests = 0
+        let records = try ChromeCookieImporter.loadCookies(
+            from: Self.cookieStore(at: databaseURL, browser: .brave),
+            matchingDomains: ["example.com"],
+            domainMatch: domainMatch,
+            safeStorageKey: { _ in
+                keyRequests += 1
+                return Data(repeating: 0x11, count: kCCKeySizeAES128)
+            })
+
+        #expect(records.map(\.value) == ["synthetic-plaintext-session"])
+        #expect(keyRequests == 0)
+    }
+
     @Test
     func egoLitePublicClientDiscoversProfilesAndDecryptsCookies() throws {
         ChromeCookieImporter.resetSafeStorageKeyCacheForTesting()
@@ -432,7 +510,25 @@ struct ChromeCookieImporterTests {
         #expect(recorder.snapshot().map(\.allowInteraction) == [false, false, true])
     }
 
-    private static func writeChromiumCookieDatabase(at url: URL, encryptedValue: Data) throws {
+    private static func cookieStore(
+        at url: URL,
+        browser: Browser = .chrome,
+        kind: BrowserCookieStoreKind = .primary) -> BrowserCookieStore
+    {
+        BrowserCookieStore(
+            browser: browser,
+            profile: BrowserProfile(id: "synthetic-profile", name: "Profile 1"),
+            kind: kind,
+            label: "Synthetic cookie store",
+            databaseURL: url)
+    }
+
+    private static func writeChromiumCookieDatabase(
+        at url: URL,
+        hostKey: String = ".example.com",
+        value: String = "",
+        encryptedValue: Data) throws
+    {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var database: OpaquePointer?
         let result = sqlite3_open(url.path, &database)
@@ -445,7 +541,7 @@ struct ChromeCookieImporterTests {
         CREATE TABLE cookies (
             host_key TEXT, name TEXT, path TEXT, expires_utc INTEGER,
             is_secure INTEGER, is_httponly INTEGER, value TEXT, encrypted_value BLOB);
-        INSERT INTO cookies VALUES ('.example.com', 'session', '/', 0, 1, 1, '', X'\(encryptedHex)');
+        INSERT INTO cookies VALUES ('\(hostKey)', 'session', '/', 0, 1, 1, '\(value)', X'\(encryptedHex)');
         """
         try #require(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
     }
