@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Chromium cookie imports no longer request a browser's Safe Storage key when its cookie store has no cookies for the requested domains, avoiding unnecessary Keychain prompts.
+
 ## 0.5.6 — 2026-10-11
 
 **Highlights:** Chromium local-storage reads return the current record by LevelDB sequence and live manifest, and a new strict exact-key API with descriptor-anchored reads serves credential discovery.

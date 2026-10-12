@@ -70,15 +70,15 @@ enum ChromeCookieImporter {
     static func loadCookies(
         from store: BrowserCookieStore,
         matchingDomains domains: [String],
-        domainMatch: BrowserCookieDomainMatch) throws -> [CookieRecord]
+        domainMatch: BrowserCookieDomainMatch,
+        safeStorageKey: (Browser) throws -> Data = ChromeCookieImporter.chromeSafeStorageKey) throws -> [CookieRecord]
     {
         guard let sourceDB = store.databaseURL else {
             throw ImportError.cookieDBNotFound(path: "Missing cookie DB for \(store.label)")
         }
-        let chromeKey = try Self.chromeSafeStorageKey(for: store.browser)
         return try Self.readCookiesFromLockedChromeDB(
             sourceDB: sourceDB,
-            key: chromeKey,
+            keyProvider: { try safeStorageKey(store.browser) },
             matchingDomains: domains,
             domainMatch: domainMatch)
     }
@@ -87,7 +87,7 @@ enum ChromeCookieImporter {
 
     private static func readCookiesFromLockedChromeDB(
         sourceDB: URL,
-        key: Data,
+        keyProvider: () throws -> Data,
         matchingDomains: [String],
         domainMatch: BrowserCookieDomainMatch) throws -> [CookieRecord]
     {
@@ -110,7 +110,7 @@ enum ChromeCookieImporter {
 
         return try Self.readCookies(
             fromDB: copiedDB.path,
-            key: key,
+            keyProvider: keyProvider,
             matchingDomains: matchingDomains,
             domainMatch: domainMatch)
     }
@@ -119,7 +119,7 @@ enum ChromeCookieImporter {
 
     private static func readCookies(
         fromDB path: String,
-        key: Data,
+        keyProvider: () throws -> Data,
         matchingDomains: [String],
         domainMatch: BrowserCookieDomainMatch) throws -> [CookieRecord]
     {
@@ -147,6 +147,7 @@ enum ChromeCookieImporter {
         }
         defer { sqlite3_finalize(stmt) }
 
+        var key: Data?
         var out: [CookieRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             let hostKey = String(cString: sqlite3_column_text(stmt, 0))
@@ -162,14 +163,16 @@ enum ChromeCookieImporter {
             let value: String
             if let plain, !plain.isEmpty {
                 value = plain
-            } else if let enc,
-                      !enc.isEmpty,
-                      let decrypted = Self.decryptChromiumValue(
-                          enc,
-                          key: key,
-                          hostKey: hostKey,
-                          databaseVersion: databaseVersion)
-            {
+            } else if let enc, !enc.isEmpty {
+                // Only request Safe Storage after host filtering finds a value that needs decryption.
+                let decryptionKey = try key ?? keyProvider()
+                key = decryptionKey
+                guard let decrypted = Self.decryptChromiumValue(
+                    enc,
+                    key: decryptionKey,
+                    hostKey: hostKey,
+                    databaseVersion: databaseVersion)
+                else { continue }
                 value = decrypted
             } else {
                 continue
