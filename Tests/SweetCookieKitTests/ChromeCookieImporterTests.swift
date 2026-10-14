@@ -12,7 +12,7 @@ import Testing
 @Suite(.serialized)
 struct ChromeCookieImporterTests {
     @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
-    func unrelatedHostsDoNotRequestSafeStorageKey(domainMatch: BrowserCookieDomainMatch) throws {
+    func `unrelated hosts do not request safe storage key`(domainMatch: BrowserCookieDomainMatch) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let databaseURL = directory.appendingPathComponent("Cookies")
@@ -36,7 +36,7 @@ struct ChromeCookieImporterTests {
     }
 
     @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
-    func matchingEncryptedCookiesRequestSafeStorageKeyOnce(domainMatch: BrowserCookieDomainMatch) throws {
+    func `matching encrypted cookies request safe storage key once`(domainMatch: BrowserCookieDomainMatch) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let databaseURL = directory.appendingPathComponent("Network/Cookies")
@@ -66,7 +66,7 @@ struct ChromeCookieImporterTests {
     }
 
     @Test(arguments: [BrowserCookieDomainMatch.contains, .suffix, .exact])
-    func matchingPlaintextCookiesDoNotRequestSafeStorageKey(domainMatch: BrowserCookieDomainMatch) throws {
+    func `matching plaintext cookies do not request safe storage key`(domainMatch: BrowserCookieDomainMatch) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let databaseURL = directory.appendingPathComponent("Cookies")
@@ -90,7 +90,53 @@ struct ChromeCookieImporterTests {
     }
 
     @Test
-    func egoLitePublicClientDiscoversProfilesAndDecryptsCookies() throws {
+    func `Claude desktop root cookie store uses its own safe storage key`() throws {
+        ChromeCookieImporter.resetSafeStorageKeyCacheForTesting()
+        let wasDisabled = BrowserCookieKeychainAccessGate.isDisabled
+        BrowserCookieKeychainAccessGate.isDisabled = false
+        defer {
+            ChromeCookieImporter.resetSafeStorageKeyCacheForTesting()
+            BrowserCookieKeychainAccessGate.isDisabled = wasDisabled
+        }
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let root = home.appendingPathComponent("Library/Application Support/Claude")
+        let key = try ChromeCookieImporter.chromeSafeStorageKey(for: .claudeDesktop) { service, account, interactive in
+            #expect(service == "Claude Safe Storage")
+            #expect(account == "Claude Key")
+            #expect(!interactive)
+            return (status: errSecSuccess, password: "synthetic-claude-password")
+        }
+        let host = ".claude.ai"
+        let plaintext = Data(SHA256.hash(data: Data(host.utf8))) + Data("synthetic-session".utf8)
+        let encrypted = Data("v10".utf8) + Self.encryptAES128CBCPKCS7(plaintext: plaintext, key: key)
+        try Self.writeChromiumCookieDatabase(
+            at: root.appendingPathComponent("Cookies"),
+            hostKey: host,
+            encryptedValue: encrypted)
+        let client = BrowserCookieClient(configuration: .init(homeDirectories: [home]))
+        let store = try #require(client.stores(for: .claudeDesktop).first)
+        #expect(store.profile.id == root.path)
+        #expect(store.databaseURL == root.appendingPathComponent("Cookies"))
+        #expect(!Browser.defaultImportOrder.contains(.claudeDesktop))
+        let unrelated = try ChromeCookieImporter.loadCookies(
+            from: store,
+            matchingDomains: ["unrelated.test"],
+            domainMatch: .exact,
+            safeStorageKey: { _ in
+                Issue.record("Unrelated hosts must not request Safe Storage")
+                return key
+            })
+        #expect(unrelated.isEmpty)
+        try BrowserCookieKeychainAccessGate.withUserInteractionDisallowed {
+            let records = try client.records(matching: .init(domains: ["claude.ai"], domainMatch: .suffix), in: store)
+            #expect(records.map(\.value) == ["synthetic-session"])
+            #expect(records.map(\.domain) == ["claude.ai"])
+        }
+    }
+
+    @Test
+    func `ego lite public client discovers profiles and decrypts cookies`() throws {
         ChromeCookieImporter.resetSafeStorageKeyCacheForTesting()
         let wasDisabled = BrowserCookieKeychainAccessGate.isDisabled
         BrowserCookieKeychainAccessGate.isDisabled = false

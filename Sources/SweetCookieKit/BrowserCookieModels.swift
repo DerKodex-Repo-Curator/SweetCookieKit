@@ -36,6 +36,8 @@ public enum Browser: String, Sendable, Hashable, CaseIterable {
     case opera
     case operaNeon
     case egoLite
+    /// Electron cookie source; opt in explicitly rather than scanning it with browsers.
+    case claudeDesktop
 
     /// Display name for UI or logs.
     public var displayName: String {

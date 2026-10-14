@@ -310,6 +310,15 @@ enum BrowserCatalog {
                 geckoProfilesFolder: nil,
                 safeStorageLabels: [("ego safe storage", "ego")],
                 appBundleName: "ego lite"),
+            BrowserMetadata(
+                browser: .claudeDesktop,
+                displayName: "Claude desktop app",
+                engine: .chromium,
+                defaultImportOrderRank: 29,
+                chromiumProfileRelativePath: "Claude",
+                geckoProfilesFolder: nil,
+                safeStorageLabels: [("Claude Safe Storage", "Claude Key")],
+                appBundleName: "Claude"),
         ]
 
         var map: [Browser: BrowserMetadata] = [:]
@@ -332,7 +341,7 @@ enum BrowserCatalog {
         precondition(entries.count == Browser.allCases.count, "Default import order missing browsers")
         let ranks = Set(entries.map(\.defaultImportOrderRank))
         precondition(ranks.count == entries.count, "Default import order has duplicate ranks")
-        return entries.map(\.browser)
+        return entries.map(\.browser).filter { $0 != .claudeDesktop }
     }()
 
     static let safeStorageLabels: [(service: String, account: String)] = {

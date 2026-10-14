@@ -47,6 +47,8 @@ Chromium sources include Aside (`Aside`), Opera (`com.operasoftware.Opera`), and
 
 Ego Lite (`.egoLite`, app bundle `ego lite.app`) uses `~/Library/Application Support/Citro Labs/ego lite` and the `ego safe storage` / `ego` Keychain label. Its profiles use the shared Chromium discovery and cookie decryption path.
 
+The Claude desktop app (`.claudeDesktop`, `Claude.app`) is an explicit opt-in source, excluded from `Browser.defaultImportOrder`. Its single Electron store lives at `~/Library/Application Support/Claude/Cookies` (or `Network/Cookies`) and uses the `Claude Safe Storage` / `Claude Key` Keychain label. Pass `[.claudeDesktop]` to discover it; host filtering and noninteractive Keychain policies apply as for browser stores.
+
 ```swift
 let stores = client.stores(in: [.safari, .chrome, .firefox])
 for store in stores {
