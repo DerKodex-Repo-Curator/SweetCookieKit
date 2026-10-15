@@ -484,7 +484,7 @@ enum ChromeCookieImporter {
             options: [.skipsHiddenFiles])
         else { return [] }
 
-        let profileDirs = entries.filter { url in
+        var profileDirs = entries.filter { url in
             guard let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory), isDir else {
                 return false
             }
@@ -492,6 +492,11 @@ enum ChromeCookieImporter {
             return name == "Default" || name.hasPrefix("Profile ") || name.hasPrefix("user-")
         }
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        // Electron keeps its single cookie store directly in the application support root.
+        if browser == .claudeDesktop {
+            profileDirs = [root]
+        }
 
         return profileDirs.flatMap { dir in
             let profileName = dir.lastPathComponent

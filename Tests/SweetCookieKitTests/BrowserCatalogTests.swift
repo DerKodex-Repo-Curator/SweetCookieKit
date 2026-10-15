@@ -48,10 +48,10 @@ struct BrowserCatalogTests {
     }
 
     @Test
-    func `default import order contains all browsers`() {
+    func `default import order contains browsers but not opt-in desktop applications`() {
         let order = BrowserCatalog.defaultImportOrder
-        #expect(order.count == Browser.allCases.count)
-        #expect(Set(order) == Set(Browser.allCases))
+        #expect(order.count == Browser.allCases.count - 1)
+        #expect(Set(order) == Set(Browser.allCases.filter { $0 != .claudeDesktop }))
         #expect(Set(order).count == order.count)
     }
 

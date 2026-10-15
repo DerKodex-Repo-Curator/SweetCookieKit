@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the opt-in Claude desktop app cookie source, using its Electron cookie store and Claude Safe Storage labels (steipete/CodexBar#4494). Thanks @flutterrausch!
+
 ## 0.5.7 — 2026-10-12
 
 **Highlights:** Chromium cookie imports check a cookie store for the requested hosts before asking for the browser's Safe Storage key, so browsers without matching cookies never trigger a Keychain prompt.
