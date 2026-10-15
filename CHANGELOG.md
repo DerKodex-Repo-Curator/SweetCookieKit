@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.8 — 2026-10-15
 
 **Highlights:** The Claude desktop app is available as an opt-in Chromium cookie source, kept out of the default browser import order.
